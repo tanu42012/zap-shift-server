@@ -2,7 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const { default: Stripe } = require('stripe');
 dotenv.config();
+const stripe = Stripe(process.env.PAYMENT_gateway_KEY);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -38,6 +40,36 @@ async function run() {
       const parcels = await parcelCollection.find({}).toArray();
       res.status(200).json(parcels);
     });
+    // Make sure you have this at the top of the file
+    const { ObjectId } = require('mongodb');
+
+    // GET /parcels/:id  ── fetch one parcel
+    app.get('/parcels/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        // Validate & convert the string id to an ObjectId
+        // if (!ObjectId.isValid(id)) {
+        //   return res.status(400).json({ message: 'Invalid parcel ID' });
+        // }
+        const objectId = new ObjectId(id);
+
+        // Query the collection
+        const parcel = await parcelCollection.findOne({ _id: objectId });
+
+        if (!parcel) {
+          return res.status(404).json({ message: 'Parcel not found' });
+        }
+
+        res.json(parcel);          // 200 OK with the document
+      } catch (error) {
+        console.error('Error fetching parcel by id:', error);
+        res.status(500).json({ message: 'Failed to fetch parcel' });
+      }
+    });
+
+
+
     // parcel api
     app.get('/parcels', async (req, res) => {
       try {
@@ -87,6 +119,32 @@ async function run() {
         console.error('Error deleting parcel:', error);
         res.status(500).json({ message: 'Failed to delete parcel' });
       }
+    });
+    app.post('/create-payment-intent', async (req, res) => {
+      // const { amount, currency = 'usd' } = req.body; // amount in cents
+      const amountInCents=req.body.amountInCents
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount:amountInCents,
+          currency:'usd',
+          
+          automatic_payment_methods: { enabled: true }, // works with Card Element or Payment Element
+        });
+        res.send({ clientSecret: paymentIntent.client_secret });
+      } catch (err) {
+        console.error(err);
+        res.status(400).send({ error: err.message });
+      }
+      // try {
+      //   const result = await axiosSecure.post('/create-payment-intent', {
+      //     amount: amountInCents,
+      //     parcelId,
+      //   });
+      //   console.log('res for intent', result.data);
+      // } catch (error) {
+      //   console.error('Payment intent creation failed:', error.response?.data || error.message);
+      // }
+      
     });
 
 

@@ -2,8 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const admin = require("firebase-admin");
 const { default: Stripe } = require('stripe');
 dotenv.config();
+
 const stripe = Stripe(process.env.PAYMENT_gateway_KEY);
 
 const app = express();
@@ -14,6 +16,14 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+
+const serviceAccount = require("./firebase-admin-key.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
 
 
 
@@ -34,12 +44,67 @@ async function run() {
     await client.connect();
 
     const db = client.db('parcelDB');
+    const usersCollection = db.collection('users');
     const parcelCollection = db.collection('parcels');
+    const paymentsCollection = db.collection('payments');
+    const ridersCollection = db.collection('riders');
 
-    app.get('/parcels', async (req, res) => {
-      const parcels = await parcelCollection.find({}).toArray();
-      res.status(200).json(parcels);
-    });
+
+
+    // custom middlewares
+    const verifyFBToken = async (req, res, next) => {
+      console.log('header in middleware', req.headers)
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).send({ message: 'unauthorized access ' })
+      }
+      const token = authHeader.split(' ')[1];
+      if (!token) {
+        return res.status(401).send({ message: 'unauthorized access ' })
+      }
+
+      // verify the token
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded;
+        next();
+      }
+      catch (error) {
+        return res.status(403).send({ message: 'forbidden access ' })
+
+      }
+
+
+
+
+
+    }
+
+
+    app.post('/users', async (req, res) => {
+      const email = req.body.email;
+      const userExits = await usersCollection.findOne({ email });
+      if (userExits) {
+        return res.status(200).send({
+          message: 'user already exists',
+          inserted: false
+        });
+
+
+
+      }
+      const user = req.body;
+      const result = await usersCollection.insertOne(user);
+      res.send(result);
+
+
+    })
+
+
+    // app.get('/parcels', async (req, res) => {
+    //   const parcels = await parcelCollection.find({}).toArray();
+    //   res.status(200).json(parcels);
+    // });
     // Make sure you have this at the top of the file
     const { ObjectId } = require('mongodb');
 
@@ -74,6 +139,7 @@ async function run() {
     app.get('/parcels', async (req, res) => {
       try {
         const { email } = req.query;
+        // console.log(req.headers);
 
         // If email is provided, filter by created_by
         const query = email ? { created_by: email } : {};
@@ -120,14 +186,177 @@ async function run() {
         res.status(500).json({ message: 'Failed to delete parcel' });
       }
     });
+
+    // riders
+    app.post('/riders', async (req, res) => {
+      const rider = req.body;
+      const result = await ridersCollection.insertOne(rider);
+      res.send(result);
+    })
+    // GET /riders/pending
+    app.get('/riders/pending', async (req, res) => {
+      try {
+        const pendingRiders = await ridersCollection
+          .find({ status: 'pending' })
+          .sort({ appliedAt: -1 }) // newest applicants first
+          .toArray();
+
+        res.send(pendingRiders);
+      } catch (error) {
+        console.error('Failed to fetch pending riders:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    
+   app.get('/riders/approved', async (req, res) => {
+      const approvedRiders = await ridersCollection.find({ status: 'approved' }).toArray();
+      res.send(approvedRiders);
+    });
+
+
+    app.patch('/riders/:id', async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+      console.log('id',id,ObjectId.isValid(id),status);
+      
+      
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ error: 'Invalid ID' });
+      }
+
+      if (!['approved', 'rejected'].includes(status)) {
+        return res.status(401).json({ error: 'Invalid status' });
+      }
+
+      try {
+        const result = await ridersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status } }
+        );
+
+        if (result.modifiedCount > 0) {
+          return res.send({ modifiedCount: result.modifiedCount });
+        } else {
+          return res.status(404).json({ error: 'No rider updated' });
+        }
+      } catch (err) {
+        console.error("PATCH /riders/:id error", err);
+        res.status(500).json({ error: 'Internal Server Error' });
+      }
+    });
+
+
+
+    app.post('/tracking', async (req, res) => {
+      const { tracking_id, parcel_id, status, message, update_by = '' } = req.body
+      const log = {
+        tracking_id,
+        parcel_id: parcel_id ? new ObjectId(parcelId) : undefined,
+        status,
+        message,
+        time: new Date(),
+        update_by,
+
+      };
+      const result = await trackingCollection.insertOne(log);
+      res.send({ success: true, insertedId: result.insertedId });
+    })
+
+
+
+    app.get('/payments', verifyFBToken, async (req, res) => {
+      // console.log('headers in payments',req.headers);
+      try {
+        console.log('decoded', req.decoded);
+        const { userEmail, parcelId, transactionId, limit = 50, skip = 0 } = req.query;
+        // if(req.decoded.email!==userEmail){
+        //   return res.status(403).send({message:'forbidden access'});
+
+        // }
+
+
+
+        // 1️⃣  Build Mongo query dynamically
+        const query = {};
+        if (userEmail) query.userEmail = userEmail;
+
+        if (parcelId) query.parcelId = new ObjectId(parcelId);
+        if (transactionId) query.transactionId = transactionId;
+
+        // 2️⃣  Fetch history, newest first
+        const payments = await paymentsCollection
+          .find(query)
+          .sort({ paid_at: -1 })            // newest → oldest
+          .skip(parseInt(skip))               // simple pagination
+          .limit(parseInt(limit))             // default 50 docs
+          .toArray();
+
+        res.send(payments);
+      } catch (error) {
+        console.error('Error fetching payments:', error);
+        res.status(500).json({ error: 'Failed to load payment history' });
+      }
+    });
+
+
+    // post record payment and update parcel
+    app.post('/payments', async (req, res) => {
+      const { transactionId, amount, parcelId, userEmail } = req.body;
+      console.log(req.body);
+
+      // if (!transactionId || !amount || !parcelId || !userEmail) {
+      //   return res.status(400).json({ error: 'Missing required payment fields' });
+      // }
+
+
+      try {
+        // 1. Mark parcel as paid
+        const parcelUpdateResult = await parcelCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+          {
+            $set: {
+              payment_status: 'paid'
+            }
+          }
+        );
+
+        // 2. Save payment history
+        const paymentData = {
+          transactionId,
+          amount,
+          parcelId: new ObjectId(parcelId),
+          userEmail,
+          paid_at_string: new Date().toISOString(),
+          createdAt: new Date()
+        };
+        console.log(paymentData);
+
+        const insertResult = await paymentsCollection.insertOne(paymentData);
+
+        res.status(201).send({
+          message: 'Payment recorded successfully',
+          parcelUpdate: parcelUpdateResult,
+          paymentRecord: insertResult,
+          insertedId: insertResult.insertedId
+        });
+
+      } catch (error) {
+        console.error("Error saving payment:", error);
+        res.status(500).json({ error: 'Failed to record payment' });
+      }
+    });
+
+
     app.post('/create-payment-intent', async (req, res) => {
       // const { amount, currency = 'usd' } = req.body; // amount in cents
-      const amountInCents=req.body.amountInCents
+      const amountInCents = req.body.amountInCents
       try {
         const paymentIntent = await stripe.paymentIntents.create({
-          amount:amountInCents,
-          currency:'usd',
-          
+          amount: amountInCents,
+          currency: 'usd',
+
           automatic_payment_methods: { enabled: true }, // works with Card Element or Payment Element
         });
         res.send({ clientSecret: paymentIntent.client_secret });
@@ -144,7 +373,7 @@ async function run() {
       // } catch (error) {
       //   console.error('Payment intent creation failed:', error.response?.data || error.message);
       // }
-      
+
     });
 
 

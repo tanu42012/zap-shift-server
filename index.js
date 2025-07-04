@@ -80,9 +80,9 @@ async function run() {
 
     }
 
-  
+
     const { ObjectId } = require('mongodb');
-  
+
     app.post('/users', async (req, res) => {
       const email = req.body.email;
       const userExits = await usersCollection.findOne({ email });
@@ -100,48 +100,73 @@ async function run() {
       res.send(result);
 
 
-    })
+    });
+
+    app.get('/users/:email/role', async (req, res) => {
+      const email = req.params.email;
+
+      if (!email) {
+        return res.status(400).send({ message: 'Email is required in query' });
+      }
+
+      try {
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { role: 1 } } // only return the role
+        );
+
+        if (!user) {
+          return res.status(404).send({ message: 'User not found' });
+        }
+
+        res.send({ role: user.role || 'user' }); // default to 'user' if role not set
+      } catch (error) {
+        console.error('Error fetching user role:', error);
+        res.status(500).send({ message: 'Internal server error' });
+      }
+    });
+
 
     app.get('/users/search', async (req, res) => {
-      const emailQuery = req.query.email ;
-  
+      const emailQuery = req.query.email;
+
       if (!emailQuery) {
         return res.status(400).json({ message: 'Missing email query (?q=...)' });
       }
-      const regex   = new RegExp(emailQuery, 'i');
-  
+      const regex = new RegExp(emailQuery, 'i');
+
       try {
-              // case‑insensitive
-        const users   = await usersCollection
-          .find({ email:{$regex: regex }})
+        // case‑insensitive
+        const users = await usersCollection
+          .find({ email: { $regex: regex } })
           .project({ email: 1, created_at: 1, role: 1 })
           .limit(20)
           .toArray();
-  
+
         res.status(200).json(users);
       } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'error searching users' });
       }
     });
-    app.patch('/users/:id/role',async(req,res)=>{
-      const {id}=req.params;
-      const {role}=req.body;
-      if(!['admin','user'].includes(role)){
-        return res.status(400).send({message:'invalid role'});
+    app.patch('/users/:id/role', async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body;
+      if (!['admin', 'user'].includes(role)) {
+        return res.status(400).send({ message: 'invalid role' });
 
       }
-      try{
-        const result=await usersCollection.updateOne(
-          {_id:new ObjectId(id)},
-          {$set:{role}}
+      try {
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role } }
         );
-        res.send({message:`user role update to${role}`,result});
+        res.send({ message: `user role update to${role}`, result });
 
       }
-      catch(error){
+      catch (error) {
         console.log(error);
-        res.status(500).send({message:'failed to update user'});
+        res.status(500).send({ message: 'failed to update user' });
       }
     });
 
@@ -151,7 +176,7 @@ async function run() {
     //   res.status(200).json(parcels);
     // });
     // Make sure you have this at the top of the file
-    
+
 
     // GET /parcels/:id  ── fetch one parcel
     app.get('/parcels/:id', async (req, res) => {
@@ -262,8 +287,8 @@ async function run() {
 
     app.patch('/riders/:id', async (req, res) => {
       const { id } = req.params;
-      const { status,email } = req.body;
-      console.log('id',id,ObjectId.isValid(id),status);
+      const { status, email } = req.body;
+      console.log('id', id, ObjectId.isValid(id), status);
 
 
 
@@ -280,14 +305,14 @@ async function run() {
           { _id: new ObjectId(id) },
           { $set: { status } }
         );
-        if(status==='active'){
-          const userQuery={email};
-          const userUpdatedDoc={
-            $set:{
-              role:'rider'
+        if (status === 'active') {
+          const userQuery = { email };
+          const userUpdatedDoc = {
+            $set: {
+              role: 'rider'
             }
           }
-          const roleResult=await usersCollection.updateOne(userQuery,userUpdatedDoc)
+          const roleResult = await usersCollection.updateOne(userQuery, userUpdatedDoc)
           console.log(roleResult.modifiedCount)
 
         }
@@ -302,7 +327,7 @@ async function run() {
         res.status(500).json({ error: 'Internal Server Error' });
       }
     });
-    
+
 
 
 
